@@ -190,12 +190,19 @@ jobs:
           # latest pnpm fails CI with ERR_PNPM_IGNORED_BUILDS)
           npm install --global pnpm@10.33.0
 
-          # Install sbpf assembler
-          cargo install --git https://github.com/blueshift-gg/sbpf.git
+          # Install sbpf assembler. Pinned to v0.1.9 (0223df0e): the unpinned
+          # tip moved to v0.2.2, which emits an sBPF binary the runtime loader
+          # rejects at execution ("Program is not deployed"), breaking every ASM
+          # example. Keep in sync with the pinned Solana version below.
+          cargo install --git https://github.com/blueshift-gg/sbpf.git --rev 0223df0e7ba622d4956b4ecf3cf2397f6945b76b
       - name: Setup Solana Stable
         uses: heyAyushh/setup-solana@v5.9
         with:
-          solana-cli-version: stable
+          # Pinned to 4.0.3, the last version the ASM examples passed on (paired
+          # with sbpf v0.1.9 above). Floating "stable" moved to 4.1.1 in the same
+          # window the toolchain broke. The beta leg below stays unpinned on
+          # purpose (it is continue-on-error and tracks the moving channel).
+          solana-cli-version: 4.0.3
       - name: Build and Test with Stable
         run: |
           source build_and_test.sh
