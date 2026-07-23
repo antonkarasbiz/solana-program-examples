@@ -1,14 +1,29 @@
 import { Buffer } from "node:buffer";
-import { Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
+import * as path from "node:path";
+import {
+  AccountRole,
+  address,
+  appendTransactionMessageInstruction,
+  createTransactionMessage,
+  generateKeyPairSigner,
+  getAddressEncoder,
+  getProgramDerivedAddress,
+  lamports,
+  pipe,
+  setTransactionMessageFeePayerSigner,
+  signTransactionMessageWithSigners,
+} from "@solana/kit";
+import { SYSTEM_PROGRAM_ADDRESS } from "@solana-program/system";
+import { TOKEN_PROGRAM_ADDRESS } from "@solana-program/token";
 import * as borsh from "borsh";
 import { assert } from "chai";
-import { start } from "solana-bankrun";
+import { FailedTransactionMetadata, LiteSVM } from "litesvm";
 
-// The legacy SPL Token program is bundled with bankrun. The Metaplex Token
-// Metadata program is not, so it is dumped from mainnet into tests/fixtures by
-// prepare.mjs and loaded by name below.
-const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-const TOKEN_METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+// The legacy SPL Token program is bundled with LiteSVM's standard runtime. The
+// Metaplex Token Metadata program is not, so it is dumped from mainnet into
+// tests/fixtures by prepare.mjs and loaded below. There is no official
+// `@solana-program/*` client for Token Metadata, so its id stays hand-rolled.
+const TOKEN_METADATA_PROGRAM_ID = address("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
 // Borsh schema for the instruction data, matching the program's `CreateTokenArgs`
 // (and the native example's wire format).
@@ -21,38 +36,38 @@ const CreateTokenArgsSchema: borsh.Schema = {
   },
 };
 
-// Derive the Metaplex metadata PDA for a mint.
-function getMetadataAddress(mint: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from("metadata"), TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-    TOKEN_METADATA_PROGRAM_ID,
-  )[0];
-}
+// The compiled program artifacts live in ./fixtures: the pinocchio program is
+// built there by `build-and-test`, and token_metadata.so is dumped from mainnet
+// by prepare.mjs. The npm scripts always run from the package root.
+const FIXTURES = path.join(process.cwd(), "tests", "fixtures");
+const PROGRAM_SO = path.join(FIXTURES, "create_token_pinocchio_program.so");
+const TOKEN_METADATA_SO = path.join(FIXTURES, "token_metadata.so");
+
+const addressEncoder = getAddressEncoder();
 
 describe("Create Token (Pinocchio)", () => {
-  const PROGRAM_ID = PublicKey.unique();
-  let context: Awaited<ReturnType<typeof start>>;
-  let client: (typeof context)["banksClient"];
-  let payer: (typeof context)["payer"];
+  let svm: LiteSVM;
+  let programId: ReturnType<typeof address>;
+  let payer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 
-  // A `describe` callback runs synchronously, so the async bankrun setup must
-  // live in a `before` hook — otherwise the `it` blocks register after Mocha
-  // has already collected the suite and nothing runs.
   before(async () => {
-    context = await start(
-      [
-        { name: "create_token_pinocchio_program", programId: PROGRAM_ID },
-        { name: "token_metadata", programId: TOKEN_METADATA_PROGRAM_ID },
-      ],
-      [],
-    );
-    client = context.banksClient;
-    payer = context.payer;
+    svm = new LiteSVM();
+    // The program never asserts its own id, so any address works; a generated
+    // one keeps the test self-contained.
+    programId = (await generateKeyPairSigner()).address;
+    svm.addProgramFromFile(programId, PROGRAM_SO);
+    svm.addProgramFromFile(TOKEN_METADATA_PROGRAM_ID, TOKEN_METADATA_SO);
+
+    payer = await generateKeyPairSigner();
+    svm.airdrop(payer.address, lamports(10_000_000_000n));
   });
 
   async function createToken(name: string, symbol: string, uri: string, decimals: number) {
-    const mintKeypair = Keypair.generate();
-    const metadataAddress = getMetadataAddress(mintKeypair.publicKey);
+    const mint = await generateKeyPairSigner();
+    const [metadataAddress] = await getProgramDerivedAddress({
+      programAddress: TOKEN_METADATA_PROGRAM_ID,
+      seeds: ["metadata", addressEncoder.encode(TOKEN_METADATA_PROGRAM_ID), addressEncoder.encode(mint.address)],
+    });
 
     const data = Buffer.from(
       borsh.serialize(CreateTokenArgsSchema, {
@@ -63,28 +78,33 @@ describe("Create Token (Pinocchio)", () => {
       }),
     );
 
-    const ix = new TransactionInstruction({
-      programId: PROGRAM_ID,
-      keys: [
-        { pubkey: mintKeypair.publicKey, isSigner: true, isWritable: true }, // mint account
-        { pubkey: payer.publicKey, isSigner: false, isWritable: false }, // mint authority
-        { pubkey: metadataAddress, isSigner: false, isWritable: true }, // metadata account
-        { pubkey: payer.publicKey, isSigner: true, isWritable: true }, // payer
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // system program
-        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, // token program
-        { pubkey: TOKEN_METADATA_PROGRAM_ID, isSigner: false, isWritable: false }, // token metadata program
+    const ix = {
+      programAddress: programId,
+      accounts: [
+        { address: mint.address, role: AccountRole.WRITABLE_SIGNER, signer: mint }, // mint account
+        { address: payer.address, role: AccountRole.READONLY }, // mint authority
+        { address: metadataAddress, role: AccountRole.WRITABLE }, // metadata account
+        { address: payer.address, role: AccountRole.WRITABLE_SIGNER, signer: payer }, // payer
+        { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY }, // system program
+        { address: TOKEN_PROGRAM_ADDRESS, role: AccountRole.READONLY }, // token program
+        { address: TOKEN_METADATA_PROGRAM_ID, role: AccountRole.READONLY }, // token metadata program
       ],
-      data,
-    });
+      data: new Uint8Array(data),
+    };
 
-    const tx = new Transaction();
-    tx.feePayer = payer.publicKey;
-    tx.recentBlockhash = context.lastBlockhash;
-    tx.add(ix);
-    tx.sign(payer, mintKeypair);
-    await client.processTransaction(tx);
+    const transactionMessage = pipe(
+      createTransactionMessage({ version: 0 }),
+      (m) => setTransactionMessageFeePayerSigner(payer, m),
+      (m) => svm.setTransactionMessageLifetimeUsingLatestBlockhash(m),
+      (m) => appendTransactionMessageInstruction(ix, m),
+    );
+    const signedTx = await signTransactionMessageWithSigners(transactionMessage);
+    const result = svm.sendTransaction(signedTx);
+    if (result instanceof FailedTransactionMetadata) {
+      throw new Error(`Transaction failed: ${result.err()}`);
+    }
 
-    return { mint: mintKeypair.publicKey, metadata: metadataAddress };
+    return { mint: mint.address, metadata: metadataAddress };
   }
 
   it("Create an SPL Token!", async () => {
@@ -95,13 +115,13 @@ describe("Create Token (Pinocchio)", () => {
       9,
     );
 
-    const mintAccount = await client.getAccount(mint);
-    if (mintAccount === null) throw new Error("Mint account not found");
-    assert.deepEqual(mintAccount.owner.toBytes(), TOKEN_PROGRAM_ID.toBytes());
+    const mintAccount = svm.getAccount(mint);
+    if (!mintAccount?.exists) throw new Error("Mint account not found");
+    assert.equal(mintAccount.programAddress, TOKEN_PROGRAM_ADDRESS);
 
-    const metadataAccount = await client.getAccount(metadata);
-    if (metadataAccount === null) throw new Error("Metadata account not found");
-    assert.deepEqual(metadataAccount.owner.toBytes(), TOKEN_METADATA_PROGRAM_ID.toBytes());
+    const metadataAccount = svm.getAccount(metadata);
+    if (!metadataAccount?.exists) throw new Error("Metadata account not found");
+    assert.equal(metadataAccount.programAddress, TOKEN_METADATA_PROGRAM_ID);
     assert.isTrue(Buffer.from(metadataAccount.data).toString("utf-8").includes("Solana Gold"));
   });
 
@@ -113,13 +133,13 @@ describe("Create Token (Pinocchio)", () => {
       0,
     );
 
-    const mintAccount = await client.getAccount(mint);
-    if (mintAccount === null) throw new Error("Mint account not found");
-    assert.deepEqual(mintAccount.owner.toBytes(), TOKEN_PROGRAM_ID.toBytes());
+    const mintAccount = svm.getAccount(mint);
+    if (!mintAccount?.exists) throw new Error("Mint account not found");
+    assert.equal(mintAccount.programAddress, TOKEN_PROGRAM_ADDRESS);
 
-    const metadataAccount = await client.getAccount(metadata);
-    if (metadataAccount === null) throw new Error("Metadata account not found");
-    assert.deepEqual(metadataAccount.owner.toBytes(), TOKEN_METADATA_PROGRAM_ID.toBytes());
+    const metadataAccount = svm.getAccount(metadata);
+    if (!metadataAccount?.exists) throw new Error("Metadata account not found");
+    assert.equal(metadataAccount.programAddress, TOKEN_METADATA_PROGRAM_ID);
     assert.isTrue(Buffer.from(metadataAccount.data).toString("utf-8").includes("Homer NFT"));
   });
 });

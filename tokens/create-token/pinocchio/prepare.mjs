@@ -1,10 +1,10 @@
-// Dumps the Metaplex Token Metadata program from mainnet into the bankrun
-// fixtures directory so the test can load it into the local test validator.
+// Dumps the Metaplex Token Metadata program from mainnet into the LiteSVM
+// fixtures directory so the test can load it with `svm.addProgramFromFile`.
 // Runs automatically via the `postinstall` script.
 //
 // Uses only the Node.js standard library (no extra dependencies). Errors are
 // logged but not fatal — a missing fixture will surface as a clear test failure
-// when bankrun can't find `token_metadata.so`.
+// when LiteSVM can't find `token_metadata.so`.
 
 import { execSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
