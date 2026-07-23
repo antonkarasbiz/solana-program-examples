@@ -251,7 +251,7 @@ Use multiple Token Extensions at once.
 
 Create tokens that cannot be transferred.
 
-[anchor](./tokens/token-2022/non-transferable/anchor) [native](./tokens/token-2022/non-transferable/native)
+[anchor](./tokens/token-2022/non-transferable/anchor) [native](./tokens/token-2022/non-transferable/native) [pinocchio](./tokens/token-2022/non-transferable/pinocchio)
 
 ### Permanent Delegate - Create tokens permanently under the control of a particular account
 
