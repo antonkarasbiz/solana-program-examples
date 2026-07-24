@@ -11,6 +11,13 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   MAX_JOBS: 64
   MIN_PROJECTS_PER_JOB: 4
@@ -23,15 +30,18 @@ env:
 jobs:
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
+      contents: read
       pull-requests: read
     outputs:
       changed_projects: ${{ steps.analyze.outputs.changed_projects }}
       total_projects: ${{ steps.analyze.outputs.total_projects }}
       matrix: ${{ steps.matrix.outputs.matrix }}
+      projects_per_job: ${{ steps.matrix.outputs.projects_per_job }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
         id: changes
         if: github.event_name == 'pull_request'
         with:
@@ -87,6 +97,7 @@ jobs:
 
           if [ "$total_projects" -lt "$min_projects_for_matrix" ]; then
             echo "matrix=[0]" >> $GITHUB_OUTPUT
+            echo "projects_per_job=$total_projects" >> $GITHUB_OUTPUT
           else
             projects_per_job=$(( (total_projects + max_jobs - 1) / max_jobs ))
             projects_per_job=$(( projects_per_job > min_projects_per_job ? projects_per_job : min_projects_per_job ))
@@ -94,12 +105,14 @@ jobs:
 
             indices=$(seq 0 $(( num_jobs - 1 )))
             echo "matrix=[$(echo $indices | tr ' ' ',')]" >> $GITHUB_OUTPUT
+            echo "projects_per_job=$projects_per_job" >> $GITHUB_OUTPUT
           fi
 
   build-and-test:
     needs: changes
     if: needs.changes.outputs.total_projects != '0'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -109,11 +122,14 @@ jobs:
       failed_projects: ${{ steps.set-failed.outputs.failed_projects }}
     steps:
       - uses: actions/checkout@v7
-      - name: Use Node.js
-        uses: actions/setup-node@v4
+      # Solana pinned to 4.0.3, the last version the ASM examples passed on
+      # (paired with the sbpf rev pinned in the setup action). Floating
+      # "stable" moved to 4.1.1 in the same window the toolchain broke. The
+      # beta leg below stays on the moving channel on purpose.
+      - uses: ./.github/actions/setup
         with:
-          node-version: "lts/*"
-          check-latest: true
+          solana-version: '4.0.3'
+          install-sbpf: 'true'
       - name: Setup build environment
         id: setup
         run: |
@@ -131,6 +147,16 @@ jobs:
               echo "$project: pnpm install failed with $solana_version" >> $GITHUB_WORKSPACE/failed_projects.txt
               cd - > /dev/null
               return 1
+            fi
+
+            # Typecheck
+            if [ -f tsconfig.json ]; then
+              if ! pnpm exec tsc --noEmit -p tsconfig.json; then
+                echo "::error::typecheck failed for $project"
+                echo "$project: typecheck failed with $solana_version" >> $GITHUB_WORKSPACE/failed_projects.txt
+                cd - > /dev/null
+                return 1
+              fi
             fi
 
             # Build and Test
@@ -161,8 +187,8 @@ jobs:
             local solana_version=$1
 
             readarray -t all_projects < <(echo '${{ needs.changes.outputs.changed_projects }}' | jq -r '.[]?')
-            start_index=$(( ${{ matrix.index }} * ${{ env.MIN_PROJECTS_PER_JOB }} ))
-            end_index=$(( start_index + ${{ env.MIN_PROJECTS_PER_JOB }} ))
+            start_index=$(( ${{ matrix.index }} * ${{ needs.changes.outputs.projects_per_job }} ))
+            end_index=$(( start_index + ${{ needs.changes.outputs.projects_per_job }} ))
             end_index=$(( end_index > ${{ needs.changes.outputs.total_projects }} ? ${{ needs.changes.outputs.total_projects }} : end_index ))
 
             echo "Projects to build and test in this job"
@@ -185,45 +211,42 @@ jobs:
 
           # Make the script executable
           chmod +x build_and_test.sh
-
-          # Install pnpm (pin to the repo's packageManager version; unpinned
-          # latest pnpm fails CI with ERR_PNPM_IGNORED_BUILDS)
-          npm install --global pnpm@10.33.0
-
-          # Install sbpf assembler. Pinned to v0.1.9 (0223df0e): the unpinned
-          # tip moved to v0.2.2, which emits an sBPF binary the runtime loader
-          # rejects at execution ("Program is not deployed"), breaking every ASM
-          # example. Keep in sync with the pinned Solana version below.
-          cargo install --git https://github.com/blueshift-gg/sbpf.git --rev 0223df0e7ba622d4956b4ecf3cf2397f6945b76b
-      - name: Setup Solana Stable
-        uses: heyAyushh/setup-solana@v5.9
-        with:
-          # Pinned to 4.0.3, the last version the ASM examples passed on (paired
-          # with sbpf v0.1.9 above). Floating "stable" moved to 4.1.1 in the same
-          # window the toolchain broke. The beta leg below stays unpinned on
-          # purpose (it is continue-on-error and tracks the moving channel).
-          solana-cli-version: 4.0.3
       - name: Build and Test with Stable
         run: |
           source build_and_test.sh
           solana -V
           rustc -V
           process_projects "stable"
-      # continue-on-error because the beta channel may not have a valid release
-      # (e.g. v4.0 returns 404 from release.anza.xyz). This is an upstream issue
-      # with heyAyushh/setup-solana — beta setup clears the stable install first.
+      # Beta runs only on the nightly schedule and never blocks: the beta
+      # channel may not have a tagged release, and beta setup clears the
+      # stable install first.
       - name: Setup Solana Beta
+        id: setup-beta
+        if: github.event_name == 'schedule'
         continue-on-error: true
-        uses: heyAyushh/setup-solana@v5.9
+        uses: ./.github/actions/setup
         with:
-          solana-cli-version: beta
+          solana-version: beta
+          install-pnpm: 'false'
+          cargo-cache: 'false'
+          install-sbpf: 'false'
       - name: Build and Test with Beta
+        id: test-beta
+        if: github.event_name == 'schedule' && steps.setup-beta.outcome == 'success'
         continue-on-error: true
         run: |
           source build_and_test.sh
           solana -V
           rustc -V
           process_projects "beta"
+      - name: Report Beta outcome
+        if: github.event_name == 'schedule'
+        run: |
+          case "${{ steps.setup-beta.outcome }}/${{ steps.test-beta.outcome }}" in
+            success/success) echo ":white_check_mark: Beta: build and tests passed" >> $GITHUB_STEP_SUMMARY ;;
+            success/*) echo ":x: Beta: build or tests failed (non-blocking)" >> $GITHUB_STEP_SUMMARY ;;
+            *) echo ":warning: Beta: skipped — beta toolchain setup failed (channel likely has no release)" >> $GITHUB_STEP_SUMMARY ;;
+          esac
 
       - name: Set failed projects output
         id: set-failed
@@ -240,6 +263,7 @@ jobs:
     needs: [changes, build-and-test]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Create job summary

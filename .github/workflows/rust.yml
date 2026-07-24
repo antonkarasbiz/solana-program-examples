@@ -14,6 +14,13 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   # See https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -25,24 +32,51 @@ jobs:
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: stable
           # Specific to dtolnay/rust-toolchain: Comma-separated string of additional components to install
           components: rustfmt
       - name: Enforce formatting
         run: cargo fmt --check
 
+  workspace-membership:
+    name: Workspace membership
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check every crate is covered by the root workspace
+        run: |
+          ignore_pattern=$(grep -v '^#' .github/.workspace-ignore | grep -v '^$' | tr '\n' '|' | sed 's/|$//')
+          [ -z "$ignore_pattern" ] && ignore_pattern='^$'
+          member_dirs=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[].manifest_path' | xargs -n1 dirname | sed "s#^$PWD/##" | sort -u)
+          crate_dirs=$(grep -rl --include=Cargo.toml '^\[package\]' . | grep -v node_modules | grep -v '/target/' | xargs -n1 dirname | sed 's#^\./##' | sort -u)
+          missing=$(comm -13 <(echo "$member_dirs") <(echo "$crate_dirs") | grep -vE "^($ignore_pattern)$" || true)
+          if [ -n "$missing" ]; then
+            echo "::error::Crates outside the root workspace escape fmt/clippy. Add them to [workspace] members in Cargo.toml or to .github/.workspace-ignore:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "All crates are workspace members or explicitly ignored."
+
   # `clippy` container job
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: stable
           components: clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: clippy
       - name: Linting
         # Allow diverging_sub_expression: false positive from Anchor 1.0's #[program] macro expansion
         run: cargo clippy -- -D warnings -A clippy::diverging_sub_expression

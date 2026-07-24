@@ -1,4 +1,4 @@
-import { BorshCoder } from "@anchor-lang/core";
+import { BorshCoder, type Idl } from "@anchor-lang/core";
 import { Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { LiteSVM } from "litesvm";
 
@@ -9,7 +9,7 @@ describe("Account Data!", () => {
   let programId: PublicKey;
   let payer: Keypair;
   let addressInfoAccount: Keypair;
-  const coder = new BorshCoder(IDL);
+  const coder = new BorshCoder(IDL as Idl);
 
   before(() => {
     litesvm = new LiteSVM();
@@ -17,11 +17,7 @@ describe("Account Data!", () => {
     payer = Keypair.generate();
     addressInfoAccount = Keypair.generate();
 
-    const programPath = new URL(
-      "../target/deploy/account_data_anchor_program.so",
-      // @ts-expect-error
-      import.meta.url,
-    ).pathname;
+    const programPath = new URL("../target/deploy/account_data_anchor_program.so", import.meta.url).pathname;
     litesvm.addProgramFromFile(programId, programPath);
 
     litesvm.airdrop(payer.publicKey, BigInt(100000000000));

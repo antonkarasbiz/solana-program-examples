@@ -3,11 +3,9 @@ import { PublicKey } from "@solana/web3.js";
 import { BankrunProvider } from "anchor-bankrun";
 import BN from "bn.js";
 import { startAnchor } from "solana-bankrun";
-import type { Anchor } from "../target/types/anchor";
+import IDL from "../target/idl/anchor.json" with { type: "json" };
+import type { Anchor } from "../target/types/anchor.ts";
 
-// Use require() for JSON import — the 'import ... with { type: "json" }' syntax
-// requires TypeScript 5.3+, but this project uses typescript ^4.3.5 with ts-mocha.
-const IDL = require("../target/idl/anchor.json");
 const PROGRAM_ID = new PublicKey(IDL.address);
 
 describe("anchor", async () => {
@@ -45,7 +43,7 @@ describe("anchor", async () => {
 
     const ix = await program.methods
       .createToken(tokenName)
-      .accounts({
+      .accountsPartial({
         signer: wallet.publicKey,
         tokenProgram: TOKEN_2022_PROGRAM_ID,
       })
@@ -64,7 +62,7 @@ describe("anchor", async () => {
 
     const ix = await program.methods
       .createAssociatedTokenAccount()
-      .accounts({
+      .accountsPartial({
         tokenAccount: payerATA,
         mint: mint,
         signer: wallet.publicKey,
@@ -85,7 +83,7 @@ describe("anchor", async () => {
     const tx = new anchor.web3.Transaction();
     const ix = await program.methods
       .createAssociatedTokenAccount()
-      .accounts({
+      .accountsPartial({
         tokenAccount: receiverATA,
         mint: mint,
         signer: receiver.publicKey,
@@ -110,7 +108,7 @@ describe("anchor", async () => {
 
     const ix = await program.methods
       .mintToken(new BN(200000000))
-      .accounts({
+      .accountsPartial({
         mint: mint,
         signer: wallet.publicKey,
         receiver: payerATA,
@@ -132,7 +130,7 @@ describe("anchor", async () => {
 
     const ix = await program.methods
       .transferToken(new BN(100))
-      .accounts({
+      .accountsPartial({
         mint: mint,
         signer: wallet.publicKey,
         from: payerATA,

@@ -1,7 +1,7 @@
 import * as anchor from "@anchor-lang/core";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { Keypair } from "@solana/web3.js";
-import type { NftMinter } from "../target/types/nft_minter";
+import type { NftMinter } from "../target/types/nft_minter.ts";
 
 describe("NFT Minter", () => {
   const provider = anchor.AnchorProvider.env();
@@ -25,7 +25,7 @@ describe("NFT Minter", () => {
 
     const transactionSignature = await program.methods
       .mintNft(metadata.name, metadata.symbol, metadata.uri)
-      .accounts({
+      .accountsPartial({
         payer: payer.publicKey,
         mintAccount: mintKeypair.publicKey,
         associatedTokenAccount: associatedTokenAccountAddress,

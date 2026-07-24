@@ -1,12 +1,11 @@
 import * as anchor from "@anchor-lang/core";
-import { ASSOCIATED_PROGRAM_ID } from "@anchor-lang/core/dist/cjs/utils/token";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { BankrunProvider } from "anchor-bankrun";
 import { startAnchor } from "solana-bankrun";
-import type { MintNft } from "../target/types/mint_nft";
+import IDL from "../target/idl/mint_nft.json" with { type: "json" };
+import type { MintNft } from "../target/types/mint_nft.ts";
 
-const IDL = require("../target/idl/mint_nft.json");
 const PROGRAM_ID = new PublicKey(IDL.address);
 const METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
@@ -105,7 +104,7 @@ describe("mint-nft bankrun", async () => {
         collectionMint,
         systemProgram: SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
       })
       .signers([mintKeypair])

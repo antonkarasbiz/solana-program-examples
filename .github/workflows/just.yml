@@ -16,6 +16,13 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_NET_RETRY: "10"
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
@@ -25,7 +32,9 @@ env:
 jobs:
   discover:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
+      contents: read
       pull-requests: read
     outputs:
       projects: ${{ steps.find.outputs.projects }}
@@ -78,6 +87,7 @@ jobs:
     needs: discover
     if: needs.discover.outputs.any == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -85,18 +95,14 @@ jobs:
     name: ${{ matrix.project }}
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
-      - name: Use Node.js
-        uses: actions/setup-node@v5
+      - uses: ./.github/actions/setup
         with:
           node-version-file: ${{ matrix.project }}/.nvmrc
-          check-latest: true
-      - name: Install just
-        uses: extractions/setup-just@v4
-      - name: Setup Solana
-        uses: heyAyushh/setup-solana@v5.9
-        with:
-          solana-cli-version: stable
+          pnpm-lock-glob: ${{ matrix.project }}/pnpm-lock.yaml
+          install-just: 'true'
+          cargo-cache-workspaces: ${{ matrix.project }}
+          cargo-cache-key: ${{ matrix.project }}
+          cargo-cache-targets: 'true'
       - name: Build and test
         working-directory: ${{ matrix.project }}
         run: |
