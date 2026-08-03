@@ -46,6 +46,10 @@ members = [
     "basics/transfer-sol/anchor/programs/*",
     "basics/transfer-sol/asm",
 
+    # cryptography
+    "cryptography/bls12-381/pinocchio/program",
+    "cryptography/bn254/pinocchio/program",
+
     # tokens
     "tokens/create-token/native/program",
     "tokens/create-token/pinocchio/program",

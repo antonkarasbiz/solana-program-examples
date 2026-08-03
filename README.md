@@ -320,6 +320,22 @@ Work with Metaplex compressed NFTs.
 
 [anchor](./compression/cutils/anchor)
 
+## Cryptography
+
+One stateless program per curve, wrapping the raw cryptographic syscalls. These run in LiteSVM today but only work on public clusters once their feature gates activate. Applied examples (multisig, key registry, encrypted ballot) live in the [crypto-primitives-examples](https://github.com/solana-foundation/crypto-primitives-examples) reference repo.
+
+### BN254 (alt_bn128) operations
+
+Add and scalar-multiply G2 points (SIMD-0302) and verify aggregate BLS signatures with a single pairing check, via the `sol_alt_bn128_group_op` syscall.
+
+[pinocchio](./cryptography/bn254/pinocchio)
+
+### BLS12-381 curve operations
+
+Add, subtract, and scalar-multiply BLS12-381 G1 and G2 points with the `sol_curve_group_op` syscall.
+
+[pinocchio](./cryptography/bls12-381/pinocchio)
+
 ## Oracles
 
 ### pyth
