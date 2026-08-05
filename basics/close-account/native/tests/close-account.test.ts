@@ -48,6 +48,33 @@ describe('Close Account!', () => {
         assert(!(result instanceof FailedTransactionMetadata), `transaction failed: ${result.toString()}`);
     });
 
+    it("An attacker cannot close another user's account", async () => {
+        // The attacker signs with their own key, but passes the victim's
+        // (payer's) User PDA as the account to close. Without a check that
+        // the target PDA actually belongs to the signer, this would drain
+        // the victim's account into the attacker's.
+        const attacker = await generateKeyPairSigner();
+        svm.airdrop(attacker.address, lamports(1_000_000_000n));
+
+        const ix = createCloseUserInstruction(testAccountAddress, attacker, programId);
+
+        const transactionMessage = pipe(
+            createTransactionMessage({ version: 0 }),
+            m => setTransactionMessageFeePayerSigner(attacker, m),
+            m => svm.setTransactionMessageLifetimeUsingLatestBlockhash(m),
+            m => appendTransactionMessageInstruction(ix, m),
+        );
+        const signedTx = await signTransactionMessageWithSigners(transactionMessage);
+
+        const result = svm.sendTransaction(signedTx);
+        assert(result instanceof FailedTransactionMetadata, 'expected the attacker transaction to fail');
+        assert.include(
+            result.err().toString(),
+            'IncorrectProgramId',
+            `expected the attacker's target PDA to be rejected as not belonging to them, got: ${result.toString()}`,
+        );
+    });
+
     it('Close the account', async () => {
         const ix = createCloseUserInstruction(testAccountAddress, payer, programId);
 

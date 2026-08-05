@@ -1,10 +1,12 @@
 use litesvm::LiteSVM;
 use solana_instruction::{AccountMeta, Instruction};
+use solana_instruction_error::InstructionError;
 use solana_keypair::{Keypair, Signer};
 use solana_native_token::LAMPORTS_PER_SOL;
 use solana_pubkey::Pubkey;
 use solana_system_interface::instruction::create_account;
 use solana_transaction::Transaction;
+use solana_transaction_error::TransactionError;
 use transfer_sol_pinocchio_program::{CPI_TRANSFER_DISCRIMINATOR, PROGRAM_TRANSFER_DISCRIMINATOR};
 #[test]
 fn test_transfer_sol() {
@@ -84,4 +86,43 @@ fn test_transfer_sol() {
 
     let res = svm.send_transaction(tx);
     assert!(res.is_ok());
+
+    // An attacker cannot drain another user's program-owned account. Create
+    // a fresh victim account genuinely owned by this program (unlike
+    // test_recipient3 above, which is only credited lamports and therefore
+    // stays System-Program-owned). The attacker never has the victim's
+    // private key: they mark it as a non-signer in the instruction and
+    // only sign with their own (unrelated) fee-payer key.
+    let victim = Keypair::new();
+    let attacker_recipient = Keypair::new();
+
+    let create_victim_ix = create_account(&payer.pubkey(), &victim.pubkey(), 2 * LAMPORTS_PER_SOL, 0, &program_id);
+    let tx = Transaction::new_signed_with_payer(
+        &[create_victim_ix],
+        Some(&payer.pubkey()),
+        &[&payer, &victim],
+        svm.latest_blockhash(),
+    );
+    let res = svm.send_transaction(tx);
+    assert!(res.is_ok());
+
+    let mut data = Vec::new();
+    data.push(PROGRAM_TRANSFER_DISCRIMINATOR);
+    data.extend_from_slice(&LAMPORTS_PER_SOL.to_le_bytes());
+
+    let attack_ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(victim.pubkey(), false), AccountMeta::new(attacker_recipient.pubkey(), false)],
+        data,
+    };
+
+    let tx = Transaction::new_signed_with_payer(&[attack_ix], Some(&payer.pubkey()), &[&payer], svm.latest_blockhash());
+
+    let res = svm.send_transaction(tx);
+    let err = res.expect_err("expected the attacker transaction to fail").err;
+    assert_eq!(
+        err,
+        TransactionError::InstructionError(0, InstructionError::MissingRequiredSignature),
+        "expected the debit to be rejected for lacking the victim's signature"
+    );
 }
