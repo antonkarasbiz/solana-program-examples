@@ -1,0 +1,117 @@
+import * as path from 'node:path';
+import {
+    AccountRole,
+    type Address,
+    appendTransactionMessageInstruction,
+    createTransactionMessage,
+    generateKeyPairSigner,
+    lamports,
+    pipe,
+    setTransactionMessageFeePayerSigner,
+    signTransactionMessageWithSigners,
+    unwrapOption,
+} from '@solana/kit';
+import { SYSVAR_RENT_ADDRESS } from '@solana/sysvars';
+import { SYSTEM_PROGRAM_ADDRESS } from '@solana-program/system';
+import { getMintDecoder, TOKEN_2022_PROGRAM_ADDRESS } from '@solana-program/token-2022';
+import * as borsh from 'borsh';
+import { assert } from 'chai';
+import { FailedTransactionMetadata, LiteSVM } from 'litesvm';
+
+// Borsh schema for the instruction data, matching the program's
+// `CreateTokenArgs` (and the native example's wire format).
+const CreateTokenArgsSchema: borsh.Schema = {
+    struct: { token_decimals: 'u8' },
+};
+
+// Token-2022 lays a mint with one extension out as:
+//   base account length (165) + account-type byte (1) + TLV entry (112) = 278
+// The TransferFeeConfig TLV entry is type (2) + length (2) + value (108).
+const EXTENDED_MINT_SIZE = 278;
+
+// The compiled program artifact, produced by `build-and-test` into ./fixtures.
+// The npm scripts always run from the package root, so resolve from the cwd.
+const PROGRAM_SO = path.join(process.cwd(), 'tests', 'fixtures', 'token_2022_transfer_fee_pinocchio_program.so');
+
+describe('Token-2022 Transfer Fee (Pinocchio)', () => {
+    let svm: LiteSVM;
+    let programId: Address;
+
+    before(async () => {
+        svm = new LiteSVM();
+        // The program never asserts its own id, so any address works; a generated
+        // one keeps the test self-contained.
+        programId = (await generateKeyPairSigner()).address;
+        svm.addProgramFromFile(programId, PROGRAM_SO);
+    });
+
+    it('Creates a Token-2022 mint with a transfer fee config', async () => {
+        const decimals = 9;
+        // The program sets the max fee to 5 tokens, scaled by the mint's decimals.
+        const expectedMaxFee = 5n * 10n ** BigInt(decimals);
+        const payer = await generateKeyPairSigner();
+        svm.airdrop(payer.address, lamports(1_000_000_000n));
+
+        const mint = await generateKeyPairSigner();
+
+        const data = borsh.serialize(CreateTokenArgsSchema, { token_decimals: decimals });
+
+        const ix = {
+            programAddress: programId,
+            accounts: [
+                { address: mint.address, role: AccountRole.WRITABLE_SIGNER, signer: mint }, // mint account
+                // The mint authority doubles as the freeze authority. It is the same key
+                // as the payer, which is also the transfer-fee config/withdraw authority
+                // and signs the post-init fee update — so one signature covers all of it.
+                { address: payer.address, role: AccountRole.READONLY }, // mint authority
+                { address: payer.address, role: AccountRole.WRITABLE_SIGNER, signer: payer }, // payer
+                { address: SYSVAR_RENT_ADDRESS, role: AccountRole.READONLY }, // rent sysvar
+                { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY }, // system program
+                { address: TOKEN_2022_PROGRAM_ADDRESS, role: AccountRole.READONLY }, // Token-2022 program
+            ],
+            data,
+        };
+
+        const transactionMessage = pipe(
+            createTransactionMessage({ version: 0 }),
+            m => setTransactionMessageFeePayerSigner(payer, m),
+            m => svm.setTransactionMessageLifetimeUsingLatestBlockhash(m),
+            m => appendTransactionMessageInstruction(ix, m),
+        );
+
+        const signedTx = await signTransactionMessageWithSigners(transactionMessage);
+        const result = svm.sendTransaction(signedTx);
+        if (result instanceof FailedTransactionMetadata) {
+            throw new Error(`Transaction failed: ${result.err()}`);
+        }
+
+        const mintAccount = svm.getAccount(mint.address);
+        if (!mintAccount?.exists) throw new Error('Mint account not found');
+
+        // Owned by Token-2022, and sized for exactly one extension.
+        assert.equal(mintAccount.programAddress, TOKEN_2022_PROGRAM_ADDRESS);
+        assert.equal(mintAccount.data.length, EXTENDED_MINT_SIZE);
+
+        // Decode the base mint fields and its TLV extensions with the official
+        // Token-2022 codec instead of reading raw byte offsets by hand.
+        const mintState = getMintDecoder().decode(mintAccount.data);
+        assert.equal(mintState.decimals, decimals);
+
+        const extensions = unwrapOption(mintState.extensions) ?? [];
+        const transferFeeExtension = extensions.find(e => e.__kind === 'TransferFeeConfig');
+        if (transferFeeExtension?.__kind !== 'TransferFeeConfig') {
+            throw new Error('TransferFeeConfig extension not found on the mint');
+        }
+
+        // Both authorities were set to the payer.
+        assert.equal(transferFeeExtension.transferFeeConfigAuthority, payer.address);
+        assert.equal(transferFeeExtension.withdrawWithheldAuthority, payer.address);
+
+        // The program initializes the fee to 1% (100 bp), then updates it to 10%
+        // (1000 bp) — so the newer (current) transfer fee is the 10% one.
+        assert.equal(transferFeeExtension.newerTransferFee.transferFeeBasisPoints, 1000);
+        assert.equal(transferFeeExtension.newerTransferFee.maximumFee, expectedMaxFee);
+
+        console.log('Mint address:', mint.address);
+    });
+});

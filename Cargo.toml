@@ -65,6 +65,7 @@ members = [
     "tokens/token-2022/default-account-state/native/program",
     "tokens/token-2022/default-account-state/pinocchio/program",
     "tokens/token-2022/transfer-fee/native/program",
+    "tokens/token-2022/transfer-fee/pinocchio/program",
     "tokens/token-2022/multiple-extensions/native/program",
 ]
 resolver = "2"
