@@ -1,24 +1,29 @@
 import { Button } from '@chakra-ui/react';
 import { useSessionWallet } from '@magicblock-labs/gum-react-sdk';
-import { useWallet } from '@solana/wallet-adapter-react';
-import { LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { useKitTransactionSigner } from '@solana/connector/react';
 import { useState } from 'react';
 import { useGameState } from '@/contexts/GameStateProvider';
-import { program } from '@/utils/anchor';
+import { PROGRAM_ADDRESS } from '@/utils/anchor';
+import { toLegacyPublicKey } from '@/utils/legacyBridge';
+
+const SESSION_TOP_UP_LAMPORTS = 10_000_000; // 0.01 SOL
 
 const SessionKeyButton = () => {
-    const { publicKey } = useWallet();
+    const { signer } = useKitTransactionSigner();
     const { gameState } = useGameState();
     const sessionWallet = useSessionWallet();
     const [isLoading, setIsLoading] = useState(false);
 
     const handleCreateSession = async () => {
         setIsLoading(true);
-        const topUpLamports = 0.01 * LAMPORTS_PER_SOL;
         const expiryInMinutes = 600;
 
         try {
-            const session = await sessionWallet.createSession(program.programId, topUpLamports, expiryInMinutes);
+            const session = await sessionWallet.createSession(
+                toLegacyPublicKey(PROGRAM_ADDRESS),
+                SESSION_TOP_UP_LAMPORTS,
+                expiryInMinutes,
+            );
             console.log('Session created:', session);
         } catch (error) {
             console.error('Failed to create session:', error);
@@ -41,7 +46,7 @@ const SessionKeyButton = () => {
 
     return (
         <>
-            {publicKey && gameState && (
+            {signer && gameState && (
                 <Button
                     isLoading={isLoading}
                     onClick={

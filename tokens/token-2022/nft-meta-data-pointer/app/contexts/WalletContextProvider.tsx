@@ -1,26 +1,20 @@
-import { WalletAdapterNetwork } from '@solana/wallet-adapter-base';
-import { PhantomWalletAdapter } from '@solana/wallet-adapter-phantom';
-import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
-import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
-import { SolflareWalletAdapter } from '@solana/wallet-adapter-solflare';
-import { clusterApiUrl } from '@solana/web3.js';
+import { AppProvider, getDefaultConfig } from '@solana/connector/react';
 import { type FC, type ReactNode, useMemo } from 'react';
-
-require('@solana/wallet-adapter-react-ui/styles.css');
+import { RPC_URL } from '@/utils/anchor';
 
 const WalletContextProvider: FC<{ children: ReactNode }> = ({ children }) => {
-    const network = WalletAdapterNetwork.Devnet;
-    const endpoint = useMemo(() => clusterApiUrl(network), []);
-
-    const wallets = useMemo(() => [new PhantomWalletAdapter(), new SolflareWalletAdapter()], []);
-
-    return (
-        <ConnectionProvider endpoint={endpoint}>
-            <WalletProvider wallets={wallets} autoConnect>
-                <WalletModalProvider>{children}</WalletModalProvider>
-            </WalletProvider>
-        </ConnectionProvider>
+    const connectorConfig = useMemo(
+        () =>
+            getDefaultConfig({
+                appName: 'Lumberjack',
+                autoConnect: true,
+                clusters: [{ id: 'solana:devnet', label: 'Devnet', url: RPC_URL }],
+                network: 'devnet',
+            }),
+        [],
     );
+
+    return <AppProvider connectorConfig={connectorConfig}>{children}</AppProvider>;
 };
 
 export default WalletContextProvider;
