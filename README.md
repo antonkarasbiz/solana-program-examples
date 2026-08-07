@@ -128,7 +128,7 @@ How to store state that changes size in Solana.
 
 Create an NFT collection, mint NFTs, and verify NFTs as part of a collection using Metaplex Token Metadata. Reminder: you don't need your own program just to mint an NFT, see the note at the top of this README.
 
-[anchor](./tokens/nft-operations/anchor)
+[anchor](./tokens/nft-operations/anchor) [pinocchio](./tokens/nft-operations/pinocchio)
 
 ### Transferring Tokens
 
