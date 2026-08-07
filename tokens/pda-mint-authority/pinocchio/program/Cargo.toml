@@ -1,0 +1,24 @@
+[package]
+name = "pda-mint-authority-pinocchio-program"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pinocchio.workspace = true
+pinocchio-log.workspace = true
+pinocchio-system.workspace = true
+pinocchio-token.workspace = true
+pinocchio-associated-token-account.workspace = true
+# `curve25519` enables on-chain `Address::find_program_address` (pinocchio 0.11
+# re-exports `Address` from `solana-address`); matches the merged block-list example.
+solana-address = { version = "2", features = ["curve25519"] }
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+custom-heap = []
+custom-panic = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

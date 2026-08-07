@@ -56,6 +56,7 @@ members = [
     "tokens/escrow/native/program",
     "tokens/escrow/pinocchio/program",
     "tokens/pda-mint-authority/native/program",
+    "tokens/pda-mint-authority/pinocchio/program",
     "tokens/transfer-tokens/native/program",
     "tokens/transfer-tokens/pinocchio/program",
     "tokens/token-2022/mint-close-authority/native/program",
