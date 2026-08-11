@@ -6000,6 +6000,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "token-2022-permanent-delegate-pinocchio-program"
+version = "0.1.0"
+dependencies = [
+ "pinocchio",
+ "pinocchio-log",
+ "pinocchio-system",
+]
+
+[[package]]
 name = "token-2022-transfer-fee-pinocchio-program"
 version = "0.1.0"
 dependencies = [
