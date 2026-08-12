@@ -12,11 +12,14 @@ import {
 import { PublicKey } from '@solana/web3.js';
 import { LiteSVMProvider } from 'anchor-litesvm';
 import BN from 'bn.js';
+import { assert } from 'chai';
 import { LiteSVM } from 'litesvm';
 import IDL from '../target/idl/fundraiser.json';
 import type { Fundraiser } from '../target/types/fundraiser';
+import { expectAnchorError } from './utils';
 
 const PROGRAM_ID = new PublicKey(IDL.address);
+const SECONDS_PER_DAY = 86400n;
 
 describe('fundraiser litesvm', () => {
     const client = new LiteSVM();
@@ -78,8 +81,10 @@ describe('fundraiser litesvm', () => {
     it('Initialize Fundaraiser', async () => {
         const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
+        // duration=1 day. This suite can warp its own clock, so it covers
+        // the full lifecycle (see the tests below).
         const tx = await program.methods
-            .initialize(new BN(30000000), 0)
+            .initialize(new BN(30000000), 1)
             .accountsPartial({
                 maker: maker.publicKey,
                 fundraiser,
@@ -143,10 +148,12 @@ describe('fundraiser litesvm', () => {
     });
 
     it('Contribute to Fundraiser - Robustness Test', async () => {
-        try {
-            const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+        // Per-contributor cap is 3_000_000 (10% of target); contributor
+        // holds 2_000_000 already. Must run before the deadline warp below.
+        const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
-            const tx = await program.methods
+        await expectAnchorError(
+            program.methods
                 .contribute(new BN(2000000))
                 .accountsPartial({
                     contributor: provider.publicKey,
@@ -156,22 +163,46 @@ describe('fundraiser litesvm', () => {
                     vault,
                     tokenProgram: TOKEN_PROGRAM_ID,
                 })
-                .rpc();
+                .rpc(),
+            'MaximumContributionsReached',
+        );
+    });
 
-            console.log('\nContributed to fundraiser', tx);
-            console.log('Your transaction signature', tx);
-            console.log('Vault balance', tokenBalance(vault).toString());
-        } catch (error) {
-            console.log('\nError contributing to fundraiser');
-            console.log(error.msg);
-        }
+    // Pre-fix this fails with AccountNotInitialized, not a wrongly-
+    // succeeding refund - contribute() was broken from its first call, so
+    // no Contributor account ever formed. Same bug, different symptom.
+    it('Refund is rejected while the fundraiser is still active', async () => {
+        const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+        const vaultBalanceBefore = tokenBalance(vault);
+
+        await expectAnchorError(
+            program.methods
+                .refund()
+                .accountsPartial({
+                    contributor: provider.publicKey,
+                    maker: maker.publicKey,
+                    mintToRaise: mint,
+                    fundraiser,
+                    contributorAccount: contributor,
+                    contributorAta: contributorATA,
+                    vault,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                })
+                .rpc(),
+            'FundraiserNotEnded',
+        );
+
+        assert.strictEqual(tokenBalance(vault), vaultBalanceBefore, 'rejected refund must not move any funds');
     });
 
     it('Check contributions - Robustness Test', async () => {
-        try {
-            const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+        // Only 2_000_000 has been contributed against a 30_000_000 target.
+        // Time-independent - checker.rs has no duration check.
+        const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
-            const tx = await program.methods
+        await expectAnchorError(
+            program.methods
                 .checkContributions()
                 .accountsPartial({
                     maker: maker.publicKey,
@@ -182,22 +213,53 @@ describe('fundraiser litesvm', () => {
                     tokenProgram: TOKEN_PROGRAM_ID,
                 })
                 .signers([maker])
-                .rpc();
+                .rpc(),
+            'TargetNotMet',
+        );
+    });
 
-            console.log('\nChecked contributions');
-            console.log('Your transaction signature', tx);
-            console.log('Vault balance', tokenBalance(vault).toString());
-        } catch (error) {
-            console.log('\nError checking contributions');
-            console.log(error.msg);
-        }
+    // Warps to the exact deadline boundary (not past it) to pin the
+    // off-by-one directly: contribute must reject exactly here.
+    it('Fundraiser closes to contributions once the duration has elapsed', async () => {
+        const fundraiserAccount = await program.account.fundraiser.fetch(fundraiser);
+        const deadline =
+            BigInt(fundraiserAccount.timeStarted.toString()) + BigInt(fundraiserAccount.duration) * SECONDS_PER_DAY;
+
+        const clock = client.getClock();
+        clock.unixTimestamp = deadline;
+        client.setClock(clock);
+        // Avoids a duplicate-transaction rejection from an earlier identical call.
+        client.expireBlockhash();
+
+        const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+
+        // 1_000_000 keeps the per-contributor cap check passing, so only
+        // the time check can reject this - proving it's the deadline.
+        await expectAnchorError(
+            program.methods
+                .contribute(new BN(1000000))
+                .accountsPartial({
+                    contributor: provider.publicKey,
+                    fundraiser,
+                    contributorAccount: contributor,
+                    contributorAta: contributorATA,
+                    vault,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                })
+                .rpc(),
+            'FundraiserEnded',
+        );
     });
 
     it('Refund Contributions', async () => {
+        // Runs after the deadline warp above, so refund's time check now passes.
         const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
         const contributorAccount = await program.account.contributor.fetch(contributor);
         console.log('\nContributor balance', contributorAccount.amount.toString());
+
+        // Same duplicate-transaction hazard as above.
+        client.expireBlockhash();
 
         const tx = await program.methods
             .refund()
@@ -216,6 +278,13 @@ describe('fundraiser litesvm', () => {
 
         console.log('\nRefunded contributions', tx);
         console.log('Your transaction signature', tx);
-        console.log('Vault balance', tokenBalance(vault).toString());
+
+        assert.strictEqual(tokenBalance(vault), 0n, 'vault should be fully drained back to the contributor');
+        assert.strictEqual(
+            tokenBalance(contributorATA),
+            10_000_000n,
+            "contributor's full original balance should be restored",
+        );
+        assert.isNull(client.getAccount(contributor), 'the Contributor account should be closed');
     });
 });

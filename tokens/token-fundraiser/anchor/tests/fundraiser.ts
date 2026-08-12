@@ -10,7 +10,9 @@ import {
     TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import BN from 'bn.js';
+import { assert } from 'chai';
 import type { Fundraiser } from '../target/types/fundraiser';
+import { expectAnchorError } from './utils';
 
 describe('fundraiser', () => {
     // Configure the client to use the local cluster.
@@ -78,8 +80,10 @@ describe('fundraiser', () => {
     it('Initialize Fundaraiser', async () => {
         const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
+        // duration=1 day. No clock-warping here (real validator) - the
+        // post-deadline happy path is covered in litesvm.test.ts instead.
         const tx = await program.methods
-            .initialize(new BN(30000000), 0)
+            .initialize(new BN(30000000), 1)
             .accountsPartial({
                 maker: maker.publicKey,
                 fundraiser,
@@ -145,10 +149,12 @@ describe('fundraiser', () => {
     });
 
     it('Contribute to Fundraiser - Robustness Test', async () => {
-        try {
-            const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+        // Per-contributor cap is 10% of target (3_000_000); contributor
+        // already holds 2_000_000, so this pushes past the cap.
+        const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
-            const tx = await program.methods
+        await expectAnchorError(
+            program.methods
                 .contribute(new BN(2000000))
                 .accountsPartial({
                     contributor: provider.publicKey,
@@ -159,22 +165,17 @@ describe('fundraiser', () => {
                     tokenProgram: TOKEN_PROGRAM_ID,
                 })
                 .rpc()
-                .then(confirm);
-
-            console.log('\nContributed to fundraiser', tx);
-            console.log('Your transaction signature', tx);
-            console.log('Vault balance', (await provider.connection.getTokenAccountBalance(vault)).value.amount);
-        } catch (error) {
-            console.log('\nError contributing to fundraiser');
-            console.log(error.msg);
-        }
+                .then(confirm),
+            'MaximumContributionsReached',
+        );
     });
 
     it('Check contributions - Robustness Test', async () => {
-        try {
-            const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+        // Only 2_000_000 has been contributed against a 30_000_000 target.
+        const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
-            const tx = await program.methods
+        await expectAnchorError(
+            program.methods
                 .checkContributions()
                 .accountsPartial({
                     maker: maker.publicKey,
@@ -186,41 +187,38 @@ describe('fundraiser', () => {
                 })
                 .signers([maker])
                 .rpc()
-                .then(confirm);
-
-            console.log('\nChecked contributions');
-            console.log('Your transaction signature', tx);
-            console.log('Vault balance', (await provider.connection.getTokenAccountBalance(vault)).value.amount);
-        } catch (error) {
-            console.log('\nError checking contributions');
-            console.log(error.msg);
-        }
+                .then(confirm),
+            'TargetNotMet',
+        );
     });
 
-    it('Refund Contributions', async () => {
+    // Can't clock-warp on a real validator, so this only proves refund is
+    // rejected while active - see litesvm.test.ts for the post-deadline
+    // happy path.
+    it('Refund is rejected while the fundraiser is still active', async () => {
         const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
+        const vaultBalanceBefore = (await provider.connection.getTokenAccountBalance(vault)).value.amount;
 
-        const contributorAccount = await program.account.contributor.fetch(contributor);
-        console.log('\nContributor balance', contributorAccount.amount.toString());
+        await expectAnchorError(
+            program.methods
+                .refund()
+                .accountsPartial({
+                    contributor: provider.publicKey,
+                    maker: maker.publicKey,
+                    mintToRaise: mint,
+                    fundraiser,
+                    contributorAccount: contributor,
+                    contributorAta: contributorATA,
+                    vault,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                })
+                .rpc()
+                .then(confirm),
+            'FundraiserNotEnded',
+        );
 
-        const tx = await program.methods
-            .refund()
-            .accountsPartial({
-                contributor: provider.publicKey,
-                maker: maker.publicKey,
-                mintToRaise: mint,
-                fundraiser,
-                contributorAccount: contributor,
-                contributorAta: contributorATA,
-                vault,
-                tokenProgram: TOKEN_PROGRAM_ID,
-                systemProgram: anchor.web3.SystemProgram.programId,
-            })
-            .rpc()
-            .then(confirm);
-
-        console.log('\nRefunded contributions', tx);
-        console.log('Your transaction signature', tx);
-        console.log('Vault balance', (await provider.connection.getTokenAccountBalance(vault)).value.amount);
+        const vaultBalanceAfter = (await provider.connection.getTokenAccountBalance(vault)).value.amount;
+        assert.strictEqual(vaultBalanceAfter, vaultBalanceBefore, 'rejected refund must not move any funds');
     });
 });
