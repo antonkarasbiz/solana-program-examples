@@ -70,6 +70,11 @@ impl TakeOffer {
         assert_is_associated_token_account(maker_token_account_b.key, maker.key, token_mint_b.key)?;
         assert_is_associated_token_account(taker_token_account_a.key, taker.key, token_mint_a.key)?;
 
+        // validate the vault is the offer's actual vault, not a substitute
+        // token-A account that also happens to be owned by the offer PDA
+        //
+        assert_is_associated_token_account(vault.key, offer_info.key, token_mint_a.key)?;
+
         // create taker token A account if needed, before receiveing tokens
         //
         if taker_token_account_a.lamports() == 0 {
@@ -168,7 +173,7 @@ impl TakeOffer {
         let maker_amount_b = TokenAccount::unpack(&maker_token_account_b.data.borrow())?.amount;
 
         assert_eq!(taker_amount_a, taker_amount_a_before_transfer + vault_amount_a);
-        assert_eq!(maker_amount_b, taker_amount_a_before_transfer + offer.token_b_wanted_amount);
+        assert_eq!(maker_amount_b, maker_amount_b_before_transfer + offer.token_b_wanted_amount);
 
         let taker_amount_b = TokenAccount::unpack(&taker_token_account_b.data.borrow())?.amount;
         let vault_amount_a = TokenAccount::unpack(&vault.data.borrow())?.amount;
