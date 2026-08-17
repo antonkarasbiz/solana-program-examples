@@ -1,6 +1,5 @@
 import * as anchor from '@anchor-lang/core';
 import {
-    AccountLayout,
     ASSOCIATED_TOKEN_PROGRAM_ID,
     createAssociatedTokenAccountInstruction,
     createInitializeMint2Instruction,
@@ -10,8 +9,8 @@ import {
     TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import { PublicKey } from '@solana/web3.js';
+import { getTokenDecoder } from '@solana-program/token';
 import { LiteSVMProvider } from 'anchor-litesvm';
-import BN from 'bn.js';
 import { assert } from 'chai';
 import { LiteSVM } from 'litesvm';
 import IDL from '../target/idl/fundraiser.json';
@@ -48,7 +47,7 @@ describe('fundraiser litesvm', () => {
     )[0];
 
     const tokenBalance = (account: anchor.web3.PublicKey) =>
-        AccountLayout.decode(client.getAccount(account).data).amount;
+        getTokenDecoder().decode(client.getAccount(account).data).amount;
 
     it('Test Preparation', async () => {
         client.airdrop(maker.publicKey, BigInt(anchor.web3.LAMPORTS_PER_SOL));
@@ -84,7 +83,7 @@ describe('fundraiser litesvm', () => {
         // duration=1 day. This suite can warp its own clock, so it covers
         // the full lifecycle (see the tests below).
         const tx = await program.methods
-            .initialize(new BN(30000000), 1)
+            .initialize(new anchor.BN(30000000), 1)
             .accountsPartial({
                 maker: maker.publicKey,
                 fundraiser,
@@ -105,7 +104,7 @@ describe('fundraiser litesvm', () => {
         const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
         const tx = await program.methods
-            .contribute(new BN(1000000))
+            .contribute(new anchor.BN(1000000))
             .accountsPartial({
                 contributor: provider.publicKey,
                 fundraiser,
@@ -128,7 +127,7 @@ describe('fundraiser litesvm', () => {
         const vault = getAssociatedTokenAddressSync(mint, fundraiser, true);
 
         const tx = await program.methods
-            .contribute(new BN(1000000))
+            .contribute(new anchor.BN(1000000))
             .accountsPartial({
                 contributor: provider.publicKey,
                 fundraiser,
@@ -154,7 +153,7 @@ describe('fundraiser litesvm', () => {
 
         await expectAnchorError(
             program.methods
-                .contribute(new BN(2000000))
+                .contribute(new anchor.BN(2000000))
                 .accountsPartial({
                     contributor: provider.publicKey,
                     fundraiser,
@@ -237,7 +236,7 @@ describe('fundraiser litesvm', () => {
         // the time check can reject this - proving it's the deadline.
         await expectAnchorError(
             program.methods
-                .contribute(new BN(1000000))
+                .contribute(new anchor.BN(1000000))
                 .accountsPartial({
                     contributor: provider.publicKey,
                     fundraiser,
