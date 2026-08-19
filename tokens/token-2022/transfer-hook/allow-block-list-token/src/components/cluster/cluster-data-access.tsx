@@ -1,6 +1,5 @@
 'use client';
 
-import { Connection, clusterApiUrl } from '@solana/web3.js';
 import { atom, useAtomValue, useSetAtom } from 'jotai';
 import { atomWithStorage } from 'jotai/utils';
 import { createContext, type ReactNode, useContext } from 'react';
@@ -20,18 +19,18 @@ export enum ClusterNetwork {
 }
 
 // By default, we don't configure the mainnet-beta cluster
-// The endpoint provided by clusterApiUrl('mainnet-beta') does not allow access from the browser due to CORS restrictions
+// The default public mainnet-beta RPC does not allow access from the browser due to CORS restrictions
 // To use the mainnet-beta cluster, provide a custom endpoint
 export const defaultClusters: SolanaCluster[] = [
     {
         name: 'devnet',
-        endpoint: clusterApiUrl('devnet'),
+        endpoint: 'https://api.devnet.solana.com',
         network: ClusterNetwork.Devnet,
     },
     { name: 'local', endpoint: 'http://localhost:8899' },
     {
         name: 'testnet',
-        endpoint: clusterApiUrl('testnet'),
+        endpoint: 'https://api.testnet.solana.com',
         network: ClusterNetwork.Testnet,
     },
 ];
@@ -77,7 +76,9 @@ export function ClusterProvider({ children }: { children: ReactNode }) {
         clusters: clusters.sort((a, b) => (a.name > b.name ? 1 : -1)),
         addCluster: (cluster: SolanaCluster) => {
             try {
-                new Connection(cluster.endpoint);
+                // Rejects a malformed endpoint before it is persisted; the RPC client itself
+                // accepts any string and would only fail later, at request time.
+                new URL(cluster.endpoint);
                 setClusters([...clusters, cluster]);
             } catch (err) {
                 console.error(`${err}`);

@@ -1,22 +1,21 @@
 'use client';
 
-import { BN } from '@anchor-lang/core';
-import { useWallet } from '@solana/wallet-adapter-react';
-import { PublicKey } from '@solana/web3.js';
+import { useWallet } from '@solana/connector/react';
+import { address as toAddress } from '@solana/kit';
 import React from 'react';
 import { Button } from '@/components/ui/button';
 import { useAblTokenProgram } from './abl-token-data-access';
 
 export function AblTokenCreate() {
-    const { publicKey } = useWallet();
+    const { account } = useWallet();
     const { initToken } = useAblTokenProgram();
     const [mode, setMode] = React.useState<'allow' | 'block' | 'threshold'>('allow');
     const [threshold, setThreshold] = React.useState('100000');
     const [formData, setFormData] = React.useState({
-        mintAuthority: publicKey ? publicKey.toString() : '',
-        freezeAuthority: publicKey ? publicKey.toString() : '',
-        permanentDelegate: publicKey ? publicKey.toString() : '',
-        transferHookAuthority: publicKey ? publicKey.toString() : '',
+        mintAuthority: account ?? '',
+        freezeAuthority: account ?? '',
+        permanentDelegate: account ?? '',
+        transferHookAuthority: account ?? '',
         name: '',
         symbol: '',
         uri: '',
@@ -28,12 +27,12 @@ export function AblTokenCreate() {
         try {
             initToken.mutateAsync({
                 decimals: parseInt(formData.decimals, 10),
-                mintAuthority: new PublicKey(formData.mintAuthority),
-                freezeAuthority: new PublicKey(formData.freezeAuthority),
-                permanentDelegate: new PublicKey(formData.permanentDelegate),
-                transferHookAuthority: new PublicKey(formData.transferHookAuthority),
+                mintAuthority: toAddress(formData.mintAuthority),
+                freezeAuthority: toAddress(formData.freezeAuthority),
+                permanentDelegate: toAddress(formData.permanentDelegate),
+                transferHookAuthority: toAddress(formData.transferHookAuthority),
                 mode,
-                threshold: new BN(threshold),
+                threshold: BigInt(threshold),
                 name: formData.name,
                 symbol: formData.symbol,
                 uri: formData.uri,
@@ -198,7 +197,7 @@ export function AblTokenCreate() {
 export function AblTokenProgram() {
     const { getProgramAccount } = useAblTokenProgram();
 
-    if (getProgramAccount.isLoading) {
+    if (getProgramAccount.isPending) {
         return <span className="loading loading-spinner loading-lg"></span>;
     }
     if (!getProgramAccount.data?.value) {
@@ -212,7 +211,13 @@ export function AblTokenProgram() {
     }
     return (
         <div className={'space-y-6'}>
-            <pre>{JSON.stringify(getProgramAccount.data.value, null, 2)}</pre>
+            <pre>
+                {JSON.stringify(
+                    getProgramAccount.data.value,
+                    (_key, value) => (typeof value === 'bigint' ? value.toString() : value),
+                    2,
+                )}
+            </pre>
         </div>
     );
 }
@@ -249,7 +254,7 @@ export function AblTokenWalletTable() {
                 .filter(entry => {
                     // Basic validation
                     try {
-                        new PublicKey(entry.address);
+                        toAddress(entry.address);
                         return ['allow', 'block'].includes(entry.mode);
                     } catch {
                         return false;

@@ -1,270 +1,216 @@
 'use client';
 
-import { Buffer } from 'node:buffer';
+import { LAMPORTS_PER_SOL } from '@solana/connector';
+import { useKitTransactionSigner, useSolanaClient, useWallet } from '@solana/connector/react';
+import { airdropFactory, fetchEncodedAccount, lamports, type Address } from '@solana/kit';
 import {
-    createAssociatedTokenAccountIdempotentInstruction,
-    createTransferCheckedInstruction,
-    getAssociatedTokenAddressSync,
-    getExtraAccountMetaAddress,
-    getMint,
-    getTransferHook,
-    TOKEN_2022_PROGRAM_ID,
-    TOKEN_PROGRAM_ID,
-} from '@solana/spl-token';
-import { useConnection, useWallet } from '@solana/wallet-adapter-react';
-import {
-    type Connection,
-    LAMPORTS_PER_SOL,
-    PublicKey,
-    SystemProgram,
-    Transaction,
-    TransactionMessage,
-    type TransactionSignature,
-    VersionedTransaction,
-} from '@solana/web3.js';
+    fetchMint,
+    findAssociatedTokenPda,
+    getCreateAssociatedTokenIdempotentInstructionAsync,
+    getTransferCheckedWithTransferHookInstructionAsync,
+    TOKEN_2022_PROGRAM_ADDRESS,
+    TOKEN_PROGRAM_ADDRESS,
+} from '@solana-program/token-2022';
+import { getTransferSolInstruction } from '@solana-program/system';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useAnchorProvider } from '../solana/solana-provider';
+import { useSendInstruction } from '@/hooks/use-send-instruction';
+import { findExtraMetasAccountPda } from '@/generated/pdas';
+import { useCluster } from '../cluster/cluster-data-access';
 import { useTransactionErrorToast, useTransactionToast } from '../use-transaction-toast';
 
-export function useGetBalance({ address }: { address: PublicKey }) {
-    const { connection } = useConnection();
+// These read an arbitrary address, so they can't use connector's `useBalance`/`useTokens`/
+// `useTransactions`, which are scoped to the connected wallet and take no address.
+export function useGetBalance({ address }: { address: Address }) {
+    const { client } = useSolanaClient();
+    const { cluster } = useCluster();
 
     return useQuery({
-        queryKey: ['get-balance', { endpoint: connection.rpcEndpoint, address }],
-        queryFn: () => connection.getBalance(address),
+        enabled: client !== null,
+        queryKey: ['get-balance', { endpoint: cluster.endpoint, address }],
+        queryFn: async () => Number((await client!.rpc.getBalance(address).send()).value),
     });
 }
 
-export function useGetSignatures({ address }: { address: PublicKey }) {
-    const { connection } = useConnection();
+export function useGetSignatures({ address }: { address: Address }) {
+    const { client } = useSolanaClient();
+    const { cluster } = useCluster();
 
     return useQuery({
-        queryKey: ['get-signatures', { endpoint: connection.rpcEndpoint, address }],
-        queryFn: () => connection.getSignaturesForAddress(address),
+        enabled: client !== null,
+        queryKey: ['get-signatures', { endpoint: cluster.endpoint, address }],
+        queryFn: () => client!.rpc.getSignaturesForAddress(address).send(),
     });
 }
 
 export function useSendTokens() {
-    const { connection } = useConnection();
-    const { publicKey } = useWallet();
+    const { client } = useSolanaClient();
+    const { account } = useWallet();
+    const { signer } = useKitTransactionSigner();
+    const sendInstruction = useSendInstruction();
     const transactionToast = useTransactionToast();
-    const provider = useAnchorProvider();
     const transactionErrorToast = useTransactionErrorToast();
 
     return useMutation({
-        mutationFn: async (args: { mint: PublicKey; destination: PublicKey; amount: number }) => {
-            if (!publicKey) throw new Error('No public key found');
+        mutationFn: async (args: { mint: Address; destination: Address; amount: number }) => {
+            if (!signer || !account || !client) throw new Error('No public key found');
             const { mint, destination, amount } = args;
-            const mintInfo = await getMint(connection, mint, 'confirmed', TOKEN_2022_PROGRAM_ID);
-            const ataDestination = getAssociatedTokenAddressSync(mint, destination, true, TOKEN_2022_PROGRAM_ID);
-            const ataSource = getAssociatedTokenAddressSync(mint, publicKey, true, TOKEN_2022_PROGRAM_ID);
-            const ix = createAssociatedTokenAccountIdempotentInstruction(
-                publicKey,
-                ataDestination,
-                destination,
-                mint,
-                TOKEN_2022_PROGRAM_ID,
+
+            const [mintAccount, [ataDestination], [ataSource]] = await Promise.all([
+                fetchMint(client.rpc, mint),
+                findAssociatedTokenPda({ owner: destination, mint, tokenProgram: TOKEN_2022_PROGRAM_ADDRESS }),
+                findAssociatedTokenPda({ owner: account, mint, tokenProgram: TOKEN_2022_PROGRAM_ADDRESS }),
+            ]);
+
+            const extensions = mintAccount.data.extensions.__option === 'Some' ? mintAccount.data.extensions.value : [];
+            const transferHook = extensions.find(extension => extension.__kind === 'TransferHook');
+            if (!transferHook) throw new Error('This mint has no transfer hook, so it is not an allow/block token');
+
+            const [extraMetasPda] = await findExtraMetasAccountPda(
+                { mint },
+                { programAddress: transferHook.programId },
             );
-            const bi = BigInt(amount);
-            const decimals = mintInfo.decimals;
+            const extraMetasAccount = await fetchEncodedAccount(client.rpc, extraMetasPda);
+            if (!extraMetasAccount.exists) {
+                throw new Error(`Transfer hook validation account ${extraMetasPda} not found — attach the mint first`);
+            }
 
-            const ix3 = await createTransferCheckedInstruction(
-                ataSource,
-                mint,
-                ataDestination,
-                publicKey,
-                bi,
-                decimals,
-                undefined,
-                TOKEN_2022_PROGRAM_ID,
+            // The hook derives the receiver's ab_wallet PDA from the owner field stored in the
+            // destination token account, so that account has to exist on chain before the
+            // transfer instruction can be assembled. Creating it in the same transaction is too
+            // late: resolution happens here, client-side, against current chain state.
+            const destinationTokenAccount = await fetchEncodedAccount(client.rpc, ataDestination);
+            if (!destinationTokenAccount.exists) {
+                const createAtaIx = await getCreateAssociatedTokenIdempotentInstructionAsync({
+                    payer: signer,
+                    owner: destination,
+                    mint,
+                    tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+                });
+                await sendInstruction(createAtaIx, signer);
+            }
+
+            // Reads the mint's on-chain extra-account-metas list to resolve the accounts the
+            // hook's Execute CPI needs — both the sender's and the receiver's ab_wallet PDAs,
+            // the hook program, and its validation account.
+            const transferIx = await getTransferCheckedWithTransferHookInstructionAsync(
+                client,
+                {
+                    source: ataSource,
+                    mint,
+                    destination: ataDestination,
+                    authority: signer,
+                    amount: BigInt(amount),
+                    decimals: mintAccount.data.decimals,
+                },
+                { tokenProgram: TOKEN_2022_PROGRAM_ADDRESS },
             );
 
-            const transferHook = getTransferHook(mintInfo);
-            if (!transferHook) throw new Error('bad token');
-            const extraMetas = getExtraAccountMetaAddress(mint, transferHook.programId);
-
-            // The hook checks both the sender and the receiver's allow/block
-            // status - the account order here must match the program's
-            // get_extra_account_metas() (source first, then destination).
-            const sourceSeeds = [Buffer.from('ab_wallet'), publicKey.toBuffer()];
-            const sourceAbWallet = PublicKey.findProgramAddressSync(sourceSeeds, transferHook.programId)[0];
-
-            const destinationSeeds = [Buffer.from('ab_wallet'), destination.toBuffer()];
-            const destinationAbWallet = PublicKey.findProgramAddressSync(destinationSeeds, transferHook.programId)[0];
-
-            ix3.keys.push({ pubkey: sourceAbWallet, isSigner: false, isWritable: false });
-            ix3.keys.push({ pubkey: destinationAbWallet, isSigner: false, isWritable: false });
-            ix3.keys.push({
-                pubkey: transferHook.programId,
-                isSigner: false,
-                isWritable: false,
-            });
-            ix3.keys.push({ pubkey: extraMetas, isSigner: false, isWritable: false });
-
-            const validateStateAccount = await connection.getAccountInfo(extraMetas, 'confirmed');
-            if (!validateStateAccount) throw new Error('validate-state-account not found');
-
-            const transaction = new Transaction();
-            transaction.add(ix, ix3);
-            transaction.feePayer = provider.wallet.publicKey;
-            transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
-            const signedTx = await provider.wallet.signTransaction(transaction);
-
-            return connection.sendRawTransaction(signedTx.serialize());
+            return sendInstruction(transferIx, signer);
         },
         onSuccess: signature => {
             transactionToast(signature);
         },
         onError: error => {
-            transactionErrorToast(error, connection);
+            transactionErrorToast(error);
         },
     });
 }
 
-export function useGetTokenAccounts({ address }: { address: PublicKey }) {
-    const { connection } = useConnection();
+export function useGetTokenAccounts({ address }: { address: Address }) {
+    const { client } = useSolanaClient();
+    const { cluster } = useCluster();
 
     return useQuery({
-        queryKey: ['get-token-accounts', { endpoint: connection.rpcEndpoint, address }],
+        enabled: client !== null,
+        queryKey: ['get-token-accounts', { endpoint: cluster.endpoint, address }],
         queryFn: async () => {
             const [tokenAccounts, token2022Accounts] = await Promise.all([
-                connection.getParsedTokenAccountsByOwner(address, {
-                    programId: TOKEN_PROGRAM_ID,
-                }),
-                connection.getParsedTokenAccountsByOwner(address, {
-                    programId: TOKEN_2022_PROGRAM_ID,
-                }),
+                client!.rpc
+                    .getTokenAccountsByOwner(address, { programId: TOKEN_PROGRAM_ADDRESS }, { encoding: 'jsonParsed' })
+                    .send(),
+                client!.rpc
+                    .getTokenAccountsByOwner(
+                        address,
+                        { programId: TOKEN_2022_PROGRAM_ADDRESS },
+                        { encoding: 'jsonParsed' },
+                    )
+                    .send(),
             ]);
             return [...tokenAccounts.value, ...token2022Accounts.value];
         },
     });
 }
 
-export function useTransferSol({ address }: { address: PublicKey }) {
-    const { connection } = useConnection();
-    // const transactionToast = useTransactionToast()
-    const wallet = useWallet();
+export function useTransferSol({ address }: { address: Address }) {
+    const { cluster } = useCluster();
+    const { signer } = useKitTransactionSigner();
+    const sendInstruction = useSendInstruction();
     const client = useQueryClient();
+    const transactionToast = useTransactionToast();
+    const transactionErrorToast = useTransactionErrorToast();
 
     return useMutation({
-        mutationKey: ['transfer-sol', { endpoint: connection.rpcEndpoint, address }],
-        mutationFn: async (input: { destination: PublicKey; amount: number }) => {
-            let signature: TransactionSignature = '';
-            try {
-                const { transaction, latestBlockhash } = await createTransaction({
-                    publicKey: address,
-                    destination: input.destination,
-                    amount: input.amount,
-                    connection,
-                });
-
-                // Send transaction and await for signature
-                signature = await wallet.sendTransaction(transaction, connection);
-
-                // Send transaction and await for signature
-                await connection.confirmTransaction({ signature, ...latestBlockhash }, 'confirmed');
-
-                console.log(signature);
-                return signature;
-            } catch (error: unknown) {
-                console.log('error', `Transaction failed! ${error}`, signature);
-
-                return;
+        mutationKey: ['transfer-sol', { endpoint: cluster.endpoint, address }],
+        mutationFn: async (input: { destination: Address; amount: number }) => {
+            if (!signer) throw new Error('Wallet not connected');
+            // Only the connected wallet can sign, so this hook applies solely to the page
+            // showing that wallet's own account.
+            if (signer.address !== address) {
+                throw new Error('Connected wallet does not match the account being viewed');
             }
+            const ix = getTransferSolInstruction({
+                source: signer,
+                destination: input.destination,
+                amount: lamports(BigInt(Math.round(input.amount * LAMPORTS_PER_SOL))),
+            });
+            return sendInstruction(ix, signer);
         },
         onSuccess: signature => {
-            if (signature) {
-                // TODO: Add back Toast
-                // transactionToast(signature)
-                console.log('Transaction sent', signature);
-            }
+            transactionToast(signature);
             return Promise.all([
                 client.invalidateQueries({
-                    queryKey: ['get-balance', { endpoint: connection.rpcEndpoint, address }],
+                    queryKey: ['get-balance', { endpoint: cluster.endpoint, address }],
                 }),
                 client.invalidateQueries({
-                    queryKey: ['get-signatures', { endpoint: connection.rpcEndpoint, address }],
+                    queryKey: ['get-signatures', { endpoint: cluster.endpoint, address }],
                 }),
             ]);
         },
         onError: error => {
-            // TODO: Add Toast
-            console.error(`Transaction failed! ${error}`);
+            transactionErrorToast(error);
         },
     });
 }
 
-export function useRequestAirdrop({ address }: { address: PublicKey }) {
-    const { connection } = useConnection();
-    // const transactionToast = useTransactionToast()
-    const client = useQueryClient();
+export function useRequestAirdrop({ address }: { address: Address }) {
+    const { client } = useSolanaClient();
+    const { cluster } = useCluster();
+    const queryClient = useQueryClient();
 
     return useMutation({
-        mutationKey: ['airdrop', { endpoint: connection.rpcEndpoint, address }],
+        mutationKey: ['airdrop', { endpoint: cluster.endpoint, address }],
         mutationFn: async (amount: number = 1) => {
-            const [latestBlockhash, signature] = await Promise.all([
-                connection.getLatestBlockhash(),
-                connection.requestAirdrop(address, amount * LAMPORTS_PER_SOL),
-            ]);
-
-            await connection.confirmTransaction({ signature, ...latestBlockhash }, 'confirmed');
-            return signature;
+            if (!client) throw new Error('Solana client not ready');
+            const airdrop = airdropFactory({ rpc: client.rpc, rpcSubscriptions: client.rpcSubscriptions });
+            // `airdropFactory` requests the airdrop and waits for confirmation.
+            return airdrop({
+                commitment: 'confirmed',
+                recipientAddress: address,
+                lamports: lamports(BigInt(Math.round(amount * LAMPORTS_PER_SOL))),
+            });
         },
-        onSuccess: signature => {
+        onSuccess: () => {
             // TODO: Add back Toast
             // transactionToast(signature)
-            console.log('Airdrop sent', signature);
+            console.log('Airdrop sent');
             return Promise.all([
-                client.invalidateQueries({
-                    queryKey: ['get-balance', { endpoint: connection.rpcEndpoint, address }],
+                queryClient.invalidateQueries({
+                    queryKey: ['get-balance', { endpoint: cluster.endpoint, address }],
                 }),
-                client.invalidateQueries({
-                    queryKey: ['get-signatures', { endpoint: connection.rpcEndpoint, address }],
+                queryClient.invalidateQueries({
+                    queryKey: ['get-signatures', { endpoint: cluster.endpoint, address }],
                 }),
             ]);
         },
     });
-}
-
-async function createTransaction({
-    publicKey,
-    destination,
-    amount,
-    connection,
-}: {
-    publicKey: PublicKey;
-    destination: PublicKey;
-    amount: number;
-    connection: Connection;
-}): Promise<{
-    transaction: VersionedTransaction;
-    latestBlockhash: { blockhash: string; lastValidBlockHeight: number };
-}> {
-    // Get the latest blockhash to use in our transaction
-    const latestBlockhash = await connection.getLatestBlockhash();
-
-    // Create instructions to send, in this case a simple transfer
-    const instructions = [
-        SystemProgram.transfer({
-            fromPubkey: publicKey,
-            toPubkey: destination,
-            lamports: amount * LAMPORTS_PER_SOL,
-        }),
-    ];
-
-    // Create a new TransactionMessage with version and compile it to legacy
-    const messageLegacy = new TransactionMessage({
-        payerKey: publicKey,
-        recentBlockhash: latestBlockhash.blockhash,
-        instructions,
-    }).compileToLegacyMessage();
-
-    // Create a new VersionedTransaction which supports legacy and v0
-    const transaction = new VersionedTransaction(messageLegacy);
-
-    return {
-        transaction,
-        latestBlockhash,
-    };
 }
