@@ -25,9 +25,15 @@ pub fn swap_exact_tokens_for_tokens(
         input_amount
     };
 
-    // Apply trading fee, used to compute the output
+    // Apply trading fee, used to compute the output.
+    // u128 + checked math avoids overflow when input * fee approaches u64::MAX.
     let amm = &ctx.accounts.amm;
-    let taxed_input = input - input * amm.fee as u64 / 10000;
+    let fee_amount = (input as u128)
+        .checked_mul(amm.fee as u128)
+        .ok_or(TutorialError::MathOverflow)?
+        .checked_div(10000)
+        .ok_or(TutorialError::MathOverflow)? as u64;
+    let taxed_input = input.checked_sub(fee_amount).ok_or(TutorialError::MathOverflow)?;
 
     let pool_a = &ctx.accounts.pool_account_a;
     let pool_b = &ctx.accounts.pool_account_b;
@@ -36,23 +42,23 @@ pub fn swap_exact_tokens_for_tokens(
     let output = if swap_a {
         (taxed_input as u128)
             .checked_mul(pool_b.amount as u128)
-            .unwrap()
-            .checked_div((pool_a.amount as u128).checked_add(taxed_input as u128).unwrap())
-            .unwrap()
+            .ok_or(TutorialError::MathOverflow)?
+            .checked_div((pool_a.amount as u128).checked_add(taxed_input as u128).ok_or(TutorialError::MathOverflow)?)
+            .ok_or(TutorialError::MathOverflow)?
     } else {
         (taxed_input as u128)
             .checked_mul(pool_a.amount as u128)
-            .unwrap()
-            .checked_div((pool_b.amount as u128).checked_add(taxed_input as u128).unwrap())
-            .unwrap()
+            .ok_or(TutorialError::MathOverflow)?
+            .checked_div((pool_b.amount as u128).checked_add(taxed_input as u128).ok_or(TutorialError::MathOverflow)?)
+            .ok_or(TutorialError::MathOverflow)?
     } as u64;
 
     if output < min_output_amount {
         return err!(TutorialError::OutputTooSmall);
     }
 
-    // Compute the invariant before the trade
-    let invariant = pool_a.amount * pool_b.amount;
+    // Compute the invariant before the trade (u128 to avoid overflow on large pools)
+    let invariant = (pool_a.amount as u128) * (pool_b.amount as u128);
 
     // Transfer tokens to the pool
     let authority_bump = ctx.bumps.pool_authority;
@@ -99,7 +105,7 @@ pub fn swap_exact_tokens_for_tokens(
                 },
                 signer_seeds,
             ),
-            input,
+            output,
         )?;
         token::transfer(
             CpiContext::new(
@@ -110,7 +116,7 @@ pub fn swap_exact_tokens_for_tokens(
                     authority: ctx.accounts.trader.to_account_info(),
                 },
             ),
-            output,
+            input,
         )?;
     }
 
@@ -126,7 +132,8 @@ pub fn swap_exact_tokens_for_tokens(
     // We tolerate if the new invariant is higher because it means a rounding error for LPs
     ctx.accounts.pool_account_a.reload()?;
     ctx.accounts.pool_account_b.reload()?;
-    if invariant > ctx.accounts.pool_account_a.amount * ctx.accounts.pool_account_a.amount {
+    let new_invariant = (ctx.accounts.pool_account_a.amount as u128) * (ctx.accounts.pool_account_b.amount as u128);
+    if invariant > new_invariant {
         return err!(TutorialError::InvariantViolated);
     }
 
