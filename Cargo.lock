@@ -5940,6 +5940,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "token-2022-immutable-owner-pinocchio-program"
+version = "0.1.0"
+dependencies = [
+ "pinocchio",
+ "pinocchio-log",
+ "pinocchio-system",
+]
+
+[[package]]
 name = "token-2022-interest-bearing-pinocchio-program"
 version = "0.1.0"
 dependencies = [
