@@ -1,10 +1,10 @@
-# Program Examples
+# Solana program examples
 
-## Onchain program examples for ⚓ Anchor, 🤥 Pinocchio, and 🦀 Native Rust.
+On-chain program catalog for **Anchor**, **Pinocchio**, and **native Rust**. This fork is maintained in the [antonkarasbiz](https://github.com/antonkarasbiz) blockchain practice as a working reference for Solana program structure, testing, and token workflows.
 
 [![Anchor](https://github.com/solana-developers/program-examples/actions/workflows/anchor.yml/badge.svg?event=schedule)](https://github.com/solana-developers/program-examples/actions/workflows/anchor.yml) [![Pinocchio](https://github.com/solana-developers/program-examples/actions/workflows/solana-pinocchio.yml/badge.svg?event=schedule)](https://github.com/solana-developers/program-examples/actions/workflows/solana-pinocchio.yml) [![Native](https://github.com/solana-developers/program-examples/actions/workflows/solana-native.yml/badge.svg?event=schedule)](https://github.com/solana-developers/program-examples/actions/workflows/solana-native.yml)
 
-This repo contains Solana onchain programs (referred to as 'Smart Contracts' in other blockchains).
+The repository contains Solana programs (smart contracts on other chains). It is a fork of the Solana Foundation / Solana Developers example set and keeps the original MIT license.
 
 > [!NOTE]
 > If you're new to Solana, you don't need to create your own programs to perform basic things like making accounts, creating tokens, sending tokens, or minting NFTs. These common tasks are handled with existing programs, for example the System Program (for making account or transferring SOL) or the token program (for creating tokens and NFTs). See the [Solana Developer site](https://solana.com/developers) to learn more.
